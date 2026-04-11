@@ -1086,10 +1086,322 @@ client.on('messageCreate', async message => {
     return;
   }
 
+  // ── COMMANDES CYBER/OSINT — Owner uniquement, résultats en MP ──
+  if (lower.startsWith('!') && isOwner(message.author.id)) {
+    const args = message.content.slice(1).trim().split(/\s+/);
+    const cmd  = args.shift().toLowerCase();
+    // Supprime le message de commande du salon pour discrétion
+    message.delete().catch(()=>{});
+
+    // Fonction utilitaire: envoie le résultat en MP
+    const dmResult = async (title, content, color=CONFIG.COLOR.INFO) => {
+      try {
+        await message.author.send({embeds:[new EmbedBuilder().setColor(color).setTitle(`🔒 ${title}`).setDescription(String(content).substring(0,4000)).setTimestamp()]});
+      } catch { /* DM fermés */ }
+    };
+
+    // !help — liste privée de toutes les commandes cyber
+    if (cmd==='chelp') {
+      await message.author.send({embeds:[new EmbedBuilder().setColor(0x00FF41).setTitle('🛡️ Commandes Cybersécurité — Privées')
+        .setDescription('Toutes les commandes sont supprimées du salon et les résultats envoyés en MP.')
+        .addFields(
+          {name:'🌐 OSINT / Réseau',value:'`!ip <adresse>` — Géolocalisation & infos IP\n`!whois <domaine/IP>` — Whois lookup\n`!dns <domaine>` — Résolution DNS (A,MX,NS,TXT)\n`!headers <url>` — Headers HTTP d\'un site\n`!ssl <domaine>` — Infos certificat SSL\n`!shodan <ip>` — Résumé Shodan (nécessite clé API)\n`!subdomains <domaine>` — Sous-domaines connus (crt.sh)'},
+          {name:'🔍 Analyse de fichiers / Hashes',value:'`!hash <texte>` — MD5/SHA1/SHA256 d\'un texte\n`!vt <hash>` — VirusTotal lookup par hash\n`!pwned <email>` — HaveIBeenPwned check\n`!cve <CVE-XXXX-XXXXX>` — Détails d\'une CVE'},
+          {name:'📡 Informations réseau',value:'`!asn <IP ou ASN>` — Infos ASN\n`!rdns <IP>` — Reverse DNS\n`!iprange <CIDR>` — Infos sur un bloc IP\n`!tor <IP>` — Vérifie si l\'IP est un nœud Tor\n`!proxy <IP>` — Vérifie si l\'IP est un proxy connu'},
+          {name:'🔐 Outils divers',value:'`!encode <texte>` — Base64 encode\n`!decode <texte>` — Base64 decode\n`!urlencode <texte>` — URL encode\n`!rot13 <texte>` — ROT13\n`!geoip <IP>` — Géoloc détaillée\n`!useragent <ua>` — Parse un User-Agent'},
+          {name:'📋 Info',value:'`!chelp` — Cette aide (MP uniquement)'},
+        ).setFooter({text:'Owner uniquement • Résultats en MP • Commandes supprimées du salon'}).setTimestamp()]});
+      return;
+    }
+
+    // !ip <adresse> — Géolocalisation IP
+    if (cmd==='ip' && args[0]) {
+      try {
+        const r = await fetch(`https://ipapi.co/${args[0]}/json/`).then(r=>r.json());
+        if (r.error) return dmResult('IP Lookup', `Erreur: ${r.reason}`, CONFIG.COLOR.ERROR);
+        await dmResult('IP Lookup — '+args[0],
+          `**IP:** \`${r.ip}\`\n**Organisation:** ${r.org||'N/A'}\n**ASN:** ${r.asn||'N/A'}\n**Pays:** ${r.country_name||'N/A'} ${r.country_code||''}\n**Région:** ${r.region||'N/A'}\n**Ville:** ${r.city||'N/A'}\n**Timezone:** ${r.timezone||'N/A'}\n**Lat/Long:** ${r.latitude}, ${r.longitude}\n**Proxy/VPN:** ${r.proxy?'⚠️ Oui':'Non'}\n**Hosting:** ${r.hosting?'⚠️ Oui':'Non'}`
+        );
+      } catch(e) { await dmResult('IP Lookup','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !whois <domaine> — Whois via API publique
+    if (cmd==='whois' && args[0]) {
+      try {
+        const r = await fetch(`https://api.whoisfreaks.com/v1.0/whois?whois=live&domainName=${args[0]}&apiKey=free`).then(r=>r.text());
+        // Fallback sur une API simple
+        const r2 = await fetch(`https://www.whois.com/whois/${args[0]}`).catch(()=>null);
+        await dmResult('Whois — '+args[0], `Résultat brut (utilise \`whois ${args[0]}\` en terminal pour complet) :\n\`\`\`\n${r.substring(0,1800)}\n\`\`\``);
+      } catch(e) { await dmResult('Whois','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !dns <domaine> — DNS lookup
+    if (cmd==='dns' && args[0]) {
+      try {
+        const types = ['A','MX','NS','TXT','AAAA','CNAME'];
+        let result = '';
+        for (const type of types) {
+          const r = await fetch(`https://dns.google/resolve?name=${args[0]}&type=${type}`).then(r=>r.json());
+          if (r.Answer?.length) {
+            result += `\n**${type}:**\n${r.Answer.map(a=>`> \`${a.data}\``).join('\n')}`;
+          }
+        }
+        await dmResult('DNS — '+args[0], result||'Aucun enregistrement trouvé.');
+      } catch(e) { await dmResult('DNS','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !headers <url> — Headers HTTP
+    if (cmd==='headers' && args[0]) {
+      try {
+        const url = args[0].startsWith('http') ? args[0] : 'https://'+args[0];
+        const r = await fetch(url, {method:'HEAD'}).catch(()=>fetch(url));
+        const headers = [...r.headers.entries()].map(([k,v])=>`**${k}:** \`${v}\``).join('\n');
+        await dmResult('Headers HTTP — '+args[0], headers||'Aucun header reçu.');
+      } catch(e) { await dmResult('Headers','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !ssl <domaine> — Infos SSL via crt.sh
+    if (cmd==='ssl' && args[0]) {
+      try {
+        const r = await fetch(`https://crt.sh/?q=${args[0]}&output=json`).then(r=>r.json());
+        const certs = r.slice(0,5).map(c=>`**CN:** ${c.common_name}\n> Émetteur: ${c.issuer_ca_id} | Valide: ${c.not_before?.split('T')[0]} → ${c.not_after?.split('T')[0]}`).join('\n\n');
+        await dmResult('SSL/TLS — '+args[0], certs||'Aucun certificat trouvé.');
+      } catch(e) { await dmResult('SSL','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !subdomains <domaine> — Sous-domaines via crt.sh
+    if (cmd==='subdomains' && args[0]) {
+      try {
+        const r = await fetch(`https://crt.sh/?q=%.${args[0]}&output=json`).then(r=>r.json());
+        const subs = [...new Set(r.map(c=>c.common_name).filter(n=>n.includes(args[0])))].slice(0,50);
+        await dmResult('Sous-domaines — '+args[0], subs.length ? subs.map(s=>`\`${s}\``).join('\n') : 'Aucun trouvé.');
+      } catch(e) { await dmResult('Subdomains','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !hash <texte> — Générer hashes
+    if (cmd==='hash' && args.length) {
+      const crypto = require('crypto');
+      const text = args.join(' ');
+      const md5    = crypto.createHash('md5').update(text).digest('hex');
+      const sha1   = crypto.createHash('sha1').update(text).digest('hex');
+      const sha256 = crypto.createHash('sha256').update(text).digest('hex');
+      const sha512 = crypto.createHash('sha512').update(text).digest('hex');
+      await dmResult('Hash Generator', `**Input:** \`${text}\`\n\n**MD5:** \`${md5}\`\n**SHA1:** \`${sha1}\`\n**SHA256:** \`${sha256}\`\n**SHA512:** \`${sha512}\``);
+      return;
+    }
+
+    // !pwned <email> — HaveIBeenPwned
+    if (cmd==='pwned' && args[0]) {
+      try {
+        const r = await fetch(`https://haveibeenpwned.com/api/v3/breachedaccount/${encodeURIComponent(args[0])}`, {
+          headers:{'hibp-api-key': process.env.HIBP_KEY||'', 'user-agent':'NexusBot-OSINT'}
+        });
+        if (r.status===404) return dmResult('HIBP — '+args[0], '✅ Aucune fuite connue pour cet email.', CONFIG.COLOR.SUCCESS);
+        if (r.status===401) return dmResult('HIBP','Clé HIBP_KEY manquante dans .env (https://haveibeenpwned.com/API/Key)',CONFIG.COLOR.WARNING);
+        const data = await r.json();
+        const breaches = data.map(b=>`**${b.Name}** (${b.BreachDate}) — ${b.PwnCount?.toLocaleString()} comptes`).join('\n');
+        await dmResult('⚠️ HIBP — Fuites détectées', breaches, CONFIG.COLOR.ERROR);
+      } catch(e) { await dmResult('HIBP','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !cve <CVE-ID> — Détails CVE via NVD
+    if (cmd==='cve' && args[0]) {
+      try {
+        const cveId = args[0].toUpperCase();
+        const r = await fetch(`https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${cveId}`).then(r=>r.json());
+        const vuln = r.vulnerabilities?.[0]?.cve;
+        if (!vuln) return dmResult('CVE','CVE introuvable.',CONFIG.COLOR.ERROR);
+        const desc = vuln.descriptions?.find(d=>d.lang==='en')?.value||'N/A';
+        const cvss = vuln.metrics?.cvssMetricV31?.[0]?.cvssData;
+        await dmResult('CVE — '+cveId,
+          `**Description:** ${desc.substring(0,800)}\n\n**CVSS v3.1:** ${cvss?.baseScore||'N/A'} (${cvss?.baseSeverity||'N/A'})\n**Vecteur:** \`${cvss?.vectorString||'N/A'}\`\n**Publié:** ${vuln.published?.split('T')[0]||'N/A'}\n**Modifié:** ${vuln.lastModified?.split('T')[0]||'N/A'}`
+        );
+      } catch(e) { await dmResult('CVE','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !asn <IP ou ASN> — Infos ASN
+    if (cmd==='asn' && args[0]) {
+      try {
+        const r = await fetch(`https://api.bgpview.io/search?query_term=${args[0]}`).then(r=>r.json());
+        const asns = r.data?.asns?.slice(0,5).map(a=>`**AS${a.asn}** — ${a.name} (${a.country_code})`).join('\n');
+        const ips  = r.data?.ipv4_prefixes?.slice(0,5).map(p=>`\`${p.prefix}\` — ${p.name}`).join('\n');
+        await dmResult('ASN — '+args[0], (asns?`**ASNs:**\n${asns}\n\n`:'')+( ips?`**Préfixes IPv4:**\n${ips}`:'Aucun résultat.'));
+      } catch(e) { await dmResult('ASN','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !rdns <IP> — Reverse DNS
+    if (cmd==='rdns' && args[0]) {
+      try {
+        const dns = require('dns').promises;
+        const result = await dns.reverse(args[0]).catch(()=>['Aucun PTR record trouvé']);
+        await dmResult('Reverse DNS — '+args[0], result.map(r=>`\`${r}\``).join('\n'));
+      } catch(e) { await dmResult('rDNS','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !tor <IP> — Vérifie nœud Tor
+    if (cmd==='tor' && args[0]) {
+      try {
+        const r = await fetch(`https://check.torproject.org/torbulkexitlist`).then(r=>r.text());
+        const isTor = r.split('\n').includes(args[0].trim());
+        await dmResult('Tor Check — '+args[0], isTor ? `⚠️ **${args[0]}** est un nœud de sortie Tor connu.` : `✅ **${args[0]}** n'est pas un nœud Tor connu.`, isTor?CONFIG.COLOR.WARNING:CONFIG.COLOR.SUCCESS);
+      } catch(e) { await dmResult('Tor','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !encode <texte> — Base64 encode
+    if (cmd==='encode' && args.length) {
+      const text = args.join(' ');
+      await dmResult('Base64 Encode', `**Input:** \`${text}\`\n**Output:** \`${Buffer.from(text).toString('base64')}\``);
+      return;
+    }
+
+    // !decode <texte> — Base64 decode
+    if (cmd==='decode' && args.length) {
+      try {
+        const text = args.join(' ');
+        const decoded = Buffer.from(text,'base64').toString('utf8');
+        await dmResult('Base64 Decode', `**Input:** \`${text}\`\n**Output:** \`${decoded}\``);
+      } catch(e) { await dmResult('Decode','Entrée base64 invalide.',CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !urlencode <texte> — URL encode
+    if (cmd==='urlencode' && args.length) {
+      const text = args.join(' ');
+      await dmResult('URL Encode', `**Input:** \`${text}\`\n**Encoded:** \`${encodeURIComponent(text)}\`\n**Decoded:** \`${decodeURIComponent(text)}\``);
+      return;
+    }
+
+    // !rot13 <texte>
+    if (cmd==='rot13' && args.length) {
+      const text = args.join(' ');
+      const rot = text.replace(/[a-zA-Z]/g, c => String.fromCharCode(c.charCodeAt(0) + (c.toLowerCase() < 'n' ? 13 : -13)));
+      await dmResult('ROT13', `**Input:** ${text}\n**Output:** ${rot}`);
+      return;
+    }
+
+    // !geoip <IP> — Géoloc détaillée
+    if (cmd==='geoip' && args[0]) {
+      try {
+        const r = await fetch(`http://ip-api.com/json/${args[0]}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,reverse,mobile,proxy,hosting,query`).then(r=>r.json());
+        if (r.status==='fail') return dmResult('GeoIP','Erreur: '+r.message,CONFIG.COLOR.ERROR);
+        await dmResult('GeoIP — '+args[0],
+          `**IP:** \`${r.query}\`\n**Pays:** ${r.country} (${r.countryCode})\n**Région:** ${r.regionName}\n**Ville:** ${r.city} ${r.zip}\n**Lat/Lon:** ${r.lat}, ${r.lon}\n**Timezone:** ${r.timezone}\n**ISP:** ${r.isp}\n**Org:** ${r.org}\n**AS:** ${r.as}\n**rDNS:** ${r.reverse||'N/A'}\n**Mobile:** ${r.mobile?'Oui':'Non'}\n**Proxy/VPN:** ${r.proxy?'⚠️ Oui':'Non'}\n**Hébergeur:** ${r.hosting?'⚠️ Oui':'Non'}`
+        );
+      } catch(e) { await dmResult('GeoIP','Erreur: '+e.message,CONFIG.COLOR.ERROR); }
+      return;
+    }
+
+    // !useragent <ua> — Parse User-Agent
+    if (cmd==='useragent' && args.length) {
+      const ua = args.join(' ');
+      const isMobile = /mobile|android|iphone|ipad/i.test(ua);
+      const isBot    = /bot|crawl|spider|slurp|bingbot|googlebot/i.test(ua);
+      const browser  = ua.match(/(Chrome|Firefox|Safari|Edge|Opera|MSIE|Trident)[\/\s]([\d.]+)/i);
+      const os       = ua.match(/(Windows NT [\d.]+|Mac OS X [\d_.]+|Linux|Android [\d.]+|iPhone OS [\d_]+)/i);
+      await dmResult('User-Agent Parser',
+        `**UA:** \`${ua.substring(0,200)}\`\n\n**Navigateur:** ${browser?`${browser[1]} ${browser[2]}`:'Non détecté'}\n**OS:** ${os?os[1]:'Non détecté'}\n**Mobile:** ${isMobile?'Oui':'Non'}\n**Bot:** ${isBot?'⚠️ Oui':'Non'}`
+      );
+      return;
+    }
+  }
+
+  // Mention directe du bot
+  // ── TRIGGER "evelyaa ..." ─────────────────────────────────
+  if (lower.startsWith(CONFIG.TRIGGER)) {
+    const question = message.content.slice(CONFIG.TRIGGER.length).trim();
+    if (!question) return message.reply({embeds:[eInfo('Evelyaa 🤖',`Pose ta question après **${CONFIG.TRIGGER}** !`)]});
+    if (!CONFIG.AI_KEY || CONFIG.AI_KEY==='VOTRE_CLE_IA_ICI') return;
+
+    // ── Actions de modération détectées dans le message ──────
+    // Disponible pour Owner et Mods uniquement
+    if (isMod(message.member)) {
+      const mention = message.mentions.members?.first();
+
+      // Enlever un rôle : "evelyaa enlève-lui le rôle modo @user"
+      if (mention && /enl[eè]ve?[-\s]?(lui|le r[oô]le)|retire[-\s]?(lui|le r[oô]le)|supprime[-\s]?lui/i.test(question)) {
+        const roleMention = message.mentions.roles?.first();
+        const role = roleMention || message.guild.roles.cache.find(r => question.toLowerCase().includes(r.name.toLowerCase()) && r.name.toLowerCase()!=='@everyone');
+        if (role) {
+          try {
+            await mention.roles.remove(role);
+            addCasier(mention.id, '🎭 Rôle retiré', `Rôle ${role.name} retiré par Evelyaa (demande de ${message.author.tag})`, message.author.id);
+            return message.reply({embeds:[eSuccess('Evelyaa',`Rôle **${role.name}** retiré à ${mention}.`)]});
+          } catch(e) { return message.reply({embeds:[eError('Evelyaa',`Impossible de retirer le rôle: \`${e.message}\``)]}); }
+        }
+        return message.reply({embeds:[eWarn('Evelyaa','Aucun rôle identifié. Mentionne le rôle ou écris son nom exact.')]});
+      }
+
+      // Donner un rôle : "evelyaa donne-lui le rôle modo @user"
+      if (mention && /donne[-\s]?(lui|le r[oô]le)|ajoute[-\s]?(lui|le r[oô]le)|mets[-\s]?lui/i.test(question)) {
+        const roleMention = message.mentions.roles?.first();
+        const role = roleMention || message.guild.roles.cache.find(r => question.toLowerCase().includes(r.name.toLowerCase()) && r.name.toLowerCase()!=='@everyone');
+        if (role) {
+          try {
+            await mention.roles.add(role);
+            return message.reply({embeds:[eSuccess('Evelyaa',`Rôle **${role.name}** donné à ${mention}.`)]});
+          } catch(e) { return message.reply({embeds:[eError('Evelyaa',`Impossible d'ajouter le rôle: \`${e.message}\``)]}); }
+        }
+        return message.reply({embeds:[eWarn('Evelyaa','Aucun rôle identifié. Mentionne le rôle ou écris son nom exact.')]});
+      }
+
+      // Mute : "evelyaa mute-lui 10m @user"
+      if (mention && /mute[sz]?[-\s]?lui|timeout/i.test(question)) {
+        const durMatch = question.match(/(\d+\s*(?:s|m|h|d))/i);
+        const dur = durMatch ? parseDuration(durMatch[1].replace(/\s/g,'')) : 600000;
+        try {
+          await mention.timeout(dur||600000, `Evelyaa — ${message.author.tag}`);
+          addCasier(mention.id,'🔇 Mute',`Via Evelyaa par ${message.author.tag}`,message.author.id);
+          return message.reply({embeds:[eSuccess('Evelyaa',`🔇 ${mention} muté **${fmtDur(dur||600000)}**.`)]});
+        } catch(e) { return message.reply({embeds:[eError('Evelyaa',`\`${e.message}\``)]}); }
+      }
+
+      // Unmute : "evelyaa unmute @user"
+      if (mention && /unmute|d[eé]mute|retire[-\s]?le mute/i.test(question)) {
+        try {
+          await mention.timeout(null);
+          return message.reply({embeds:[eSuccess('Evelyaa',`🔊 Mute retiré à ${mention}.`)]});
+        } catch(e) { return message.reply({embeds:[eError('Evelyaa',`\`${e.message}\``)]}); }
+      }
+
+      // Kick : "evelyaa kick @user" (Admin seulement)
+      if (mention && /\bkick[sz]?[-\s]?(lui)?|expulse/i.test(question) && isAdmin(message.member)) {
+        const reason = `Evelyaa — ${message.author.tag}`;
+        try {
+          await mention.kick(reason);
+          addCasier(mention.id,'👢 Kick',reason,message.author.id);
+          return message.reply({embeds:[eSuccess('Evelyaa',`👢 ${mention.user.tag} expulsé.`)]});
+        } catch(e) { return message.reply({embeds:[eError('Evelyaa',`\`${e.message}\``)]}); }
+      }
+    }
+
+    // Sinon → réponse IA normale
+    await message.channel.sendTyping();
+    try {
+      const ctx = `[Serveur: "${message.guild.name}" | Demandé par: ${message.author.tag}]\n${question}`;
+      const reply = await askAI(message.author.id, ctx, message.guild.id);
+      await message.reply({embeds:[new EmbedBuilder().setColor(CONFIG.COLOR.PRIMARY)
+        .setDescription(reply.substring(0,4096))
+        .setFooter({text:`${AI_MODES[aiModes[message.guild.id]?.mode||'assistant'].name} • Evelyaa`})
+        .setTimestamp()]});
+    } catch(err) { message.reply({embeds:[eError('Evelyaa',err.message)]}); }
+    return;
+  }
+
   // Mention directe du bot
   if (message.mentions.has(client.user) && !message.mentions.everyone) {
     const q = message.content.replace(`<@${client.user.id}>`,'').trim();
-    if (!q) return message.reply({embeds:[eInfo('Evelyaa 🤖',`Écris \`${CONFIG.TRIGGER} ta question\` ou mentionne-moi avec une question !`)]});
+    if (!q) return message.reply({embeds:[eInfo('Evelyaa 🤖',`Écris \`${CONFIG.TRIGGER} ta question\` !`)]});
     if (!CONFIG.AI_KEY || CONFIG.AI_KEY==='VOTRE_CLE_IA_ICI') return;
     await message.channel.sendTyping();
     try {
